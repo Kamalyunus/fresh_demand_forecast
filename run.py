@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Run script for TFT model training and forecasting
+Run script for TFT model training and forecasting with improved parameters
 """
 
 import argparse
@@ -20,7 +20,7 @@ def load_module_from_file(file_path, module_name):
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Run TFT model training and forecasting')
+    parser = argparse.ArgumentParser(description='Run TFT model training and forecasting with improved parameters')
     
     # Data arguments
     parser.add_argument('--data-source', choices=['synthetic', 'real'], default='synthetic',
@@ -44,11 +44,18 @@ def parse_arguments():
     parser.add_argument('--batch-size', type=int, help='Batch size for training')
     parser.add_argument('--epochs', type=int, help='Maximum number of epochs')
     parser.add_argument('--learning-rate', type=float, help='Learning rate for optimizer')
+    parser.add_argument('--early-stopping', type=int, help='Early stopping patience')
     
     # Output arguments
     parser.add_argument('--output-dir', type=str, default='./output',
                         help='Base output directory')
     parser.add_argument('--config-file', type=str, help='Path to custom configuration JSON file')
+    
+    # Additional arguments for improved features
+    parser.add_argument('--use-cross-effects', action='store_true', 
+                        help='Enable cross-product effects analysis')
+    parser.add_argument('--skip-plots', action='store_true',
+                        help='Skip generating plots to save time')
     
     return parser.parse_args()
 
@@ -81,6 +88,8 @@ def update_config_from_args(config, args):
         config['training']['num_epochs'] = args.epochs
     if args.learning_rate:
         config['model']['learning_rate'] = args.learning_rate
+    if args.early_stopping:
+        config['training']['early_stopping_patience'] = args.early_stopping
     
     # Output configuration
     if args.output_dir:

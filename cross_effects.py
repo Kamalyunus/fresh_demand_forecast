@@ -1,11 +1,6 @@
 # cross_effects.py
 """
-Module for analyzing and incorporating cross-product effects in demand forecasting.
-
-This module focuses on:
-1. Detecting cannibalization (negative cross-price elasticity)
-2. Detecting halo effects (positive cross-price elasticity)
-3. Generating features that capture these relationships
+Modified version with better handling of missing values
 """
 
 import pandas as pd
@@ -40,9 +35,14 @@ def calculate_price_elasticity(df, price_col='price', demand_col='demand',
     """
     logger.info("Calculating own-price elasticity")
     
+    # Check if price column exists
+    if price_col not in df.columns:
+        logger.warning(f"Price column '{price_col}' not found in dataframe")
+        return pd.DataFrame(columns=['sku', 'elasticity', 'elasticity_stdev', 'p_value', 'valid'])
+    
     results = []
     
-    for sku in tqdm(df[sku_col].unique()):
+    for sku in df[sku_col].unique():
         # Get data for this SKU
         sku_data = df[df[sku_col] == sku].copy()
         
@@ -59,8 +59,21 @@ def calculate_price_elasticity(df, price_col='price', demand_col='demand',
         
         try:
             # Take log of price and demand
-            sku_data['log_price'] = np.log(sku_data[price_col])
+            sku_data['log_price'] = np.log(sku_data[price_col].clip(lower=0.1))
             sku_data['log_demand'] = np.log(sku_data[demand_col].clip(lower=0.1))  # Avoid log(0)
+            
+            # Remove NaN values
+            sku_data = sku_data.dropna(subset=['log_price', 'log_demand'])
+            
+            if len(sku_data) < min_periods:
+                results.append({
+                    'sku': sku,
+                    'elasticity': np.nan,
+                    'elasticity_stdev': np.nan,
+                    'p_value': np.nan,
+                    'valid': False
+                })
+                continue
             
             # Add constant for regression
             X = sm.add_constant(sku_data['log_price'])
@@ -119,6 +132,11 @@ def calculate_cross_price_elasticity(df, target_sku, candidate_skus=None,
     """
     logger.info(f"Calculating cross-price elasticity for {target_sku}")
     
+    # Check if price column exists
+    if price_col not in df.columns:
+        logger.warning(f"Price column '{price_col}' not found in dataframe")
+        return pd.DataFrame()
+    
     # Get data for target SKU
     target_data = df[df[sku_col] == target_sku].copy()
     
@@ -135,7 +153,7 @@ def calculate_cross_price_elasticity(df, target_sku, candidate_skus=None,
     
     results = []
     
-    for candidate_sku in tqdm(candidate_skus):
+    for candidate_sku in candidate_skus:
         # Skip self
         if candidate_sku == target_sku:
             continue
@@ -165,8 +183,14 @@ def calculate_cross_price_elasticity(df, target_sku, candidate_skus=None,
         try:
             # Take log of price and demand
             merged_data['log_target_demand'] = np.log(merged_data[demand_col].clip(lower=0.1))
-            merged_data['log_candidate_price'] = np.log(merged_data['candidate_price'])
-            merged_data['log_target_price'] = np.log(merged_data[price_col])
+            merged_data['log_candidate_price'] = np.log(merged_data['candidate_price'].clip(lower=0.1))
+            merged_data['log_target_price'] = np.log(merged_data[price_col].clip(lower=0.1))
+            
+            # Remove NaN values
+            merged_data = merged_data.dropna(subset=['log_target_demand', 'log_candidate_price', 'log_target_price'])
+            
+            if len(merged_data) < min_periods:
+                continue
             
             # Add constant for regression
             X = sm.add_constant(merged_data[['log_target_price', 'log_candidate_price']])
@@ -220,7 +244,9 @@ def find_top_related_products(df, price_col='price', demand_col='demand',
     
     # Ensure we have a price column
     if price_col not in df.columns:
-        raise ValueError(f"Price column '{price_col}' not found in dataframe")
+        logger.warning(f"Price column '{price_col}' not found in dataframe")
+        # Return empty dictionary with all SKUs
+        return {sku: [] for sku in df[sku_col].unique()}
     
     # Get unique SKUs
     skus = df[sku_col].unique()
@@ -228,7 +254,7 @@ def find_top_related_products(df, price_col='price', demand_col='demand',
     # Dictionary to store results
     related_products = {}
     
-    for sku in tqdm(skus):
+    for sku in skus:
         # Calculate cross-price elasticity
         cross_elasticity_df = calculate_cross_price_elasticity(
             df, sku, candidate_skus=None,
@@ -280,18 +306,29 @@ def generate_cross_product_features(df, related_products_dict, price_col='price'
     # Create a copy of the dataframe
     enhanced_df = df.copy()
     
+    # Check if we have price data - if not, return the original dataframe
+    if price_col not in enhanced_df.columns:
+        logger.warning(f"Price column '{price_col}' not found in dataframe")
+        return enhanced_df
+    
+    # Initialize cross-product feature columns with zeros
+    enhanced_df['avg_related_price_ratio'] = 0.0
+    enhanced_df['min_related_price_ratio'] = 0.0 
+    enhanced_df['max_related_price_ratio'] = 0.0
+    
+    if promo_col is not None and promo_col in df.columns:
+        enhanced_df['num_related_promos'] = 0
+        enhanced_df['joint_promos'] = 0
+    
     # Create a pivot table of prices
-    price_pivot = df.pivot_table(index=date_col, columns=sku_col, values=price_col)
+    price_pivot = df.pivot_table(index=date_col, columns=sku_col, values=price_col, fill_value=0)
     
     # Create promotion pivot if promo column is available
     if promo_col is not None and promo_col in df.columns:
         promo_pivot = df.pivot_table(index=date_col, columns=sku_col, values=promo_col, fill_value=0)
     
-    # Process each row
-    for index, row in tqdm(enhanced_df.iterrows(), total=len(enhanced_df)):
-        sku = row[sku_col]
-        date = row[date_col]
-        
+    # Process each unique SKU
+    for sku in enhanced_df[sku_col].unique():
         # Skip if SKU has no related products
         if sku not in related_products_dict or len(related_products_dict[sku]) == 0:
             continue
@@ -299,244 +336,66 @@ def generate_cross_product_features(df, related_products_dict, price_col='price'
         # Get related products
         related_products = related_products_dict[sku]
         
-        # Initialize features
-        price_ratios = []
-        related_promos = []
-        joint_promos = 0
+        # Get indices for this SKU
+        sku_indices = enhanced_df[enhanced_df[sku_col] == sku].index
         
-        for related_product in related_products:
-            related_sku = related_product['related_sku']
+        for idx in sku_indices:
+            # Get date for this record
+            date = enhanced_df.loc[idx, date_col]
             
-            # Calculate price ratio if both prices are available
-            if date in price_pivot.index and sku in price_pivot.columns and related_sku in price_pivot.columns:
-                own_price = price_pivot.loc[date, sku]
-                related_price = price_pivot.loc[date, related_sku]
-                
-                if own_price > 0 and related_price > 0:
-                    price_ratio = related_price / own_price
-                    price_ratios.append(price_ratio)
+            # Initialize features
+            price_ratios = []
+            related_promos = []
+            joint_promos = 0
             
-            # Check for promotions
-            if promo_col is not None and date in promo_pivot.index and related_sku in promo_pivot.columns:
-                related_promo = promo_pivot.loc[date, related_sku]
-                related_promos.append(related_promo)
+            for related_product in related_products:
+                related_sku = related_product['related_sku']
                 
-                # Check for joint promotion
-                if row[promo_col] > 0 and related_promo > 0:
-                    joint_promos += 1
-        
-        # Add features to the dataframe
-        if price_ratios:
-            enhanced_df.loc[index, 'avg_related_price_ratio'] = np.mean(price_ratios)
-            enhanced_df.loc[index, 'min_related_price_ratio'] = np.min(price_ratios)
-            enhanced_df.loc[index, 'max_related_price_ratio'] = np.max(price_ratios)
-        
-        if promo_col is not None and related_promos:
-            enhanced_df.loc[index, 'num_related_promos'] = sum(related_promos)
-            enhanced_df.loc[index, 'joint_promos'] = joint_promos
+                # Calculate price ratio if both prices are available
+                if date in price_pivot.index and sku in price_pivot.columns and related_sku in price_pivot.columns:
+                    own_price = price_pivot.loc[date, sku]
+                    related_price = price_pivot.loc[date, related_sku]
+                    
+                    if own_price > 0 and related_price > 0:
+                        price_ratio = related_price / own_price
+                        price_ratios.append(price_ratio)
+                
+                # Check for promotions
+                if promo_col is not None and promo_col in df.columns and date in promo_pivot.index and related_sku in promo_pivot.columns:
+                    related_promo = promo_pivot.loc[date, related_sku]
+                    related_promos.append(related_promo)
+                    
+                    # Check for joint promotion
+                    if enhanced_df.loc[idx, promo_col] > 0 and related_promo > 0:
+                        joint_promos += 1
+            
+            # Add features to the dataframe
+            if price_ratios:
+                enhanced_df.loc[idx, 'avg_related_price_ratio'] = np.mean(price_ratios)
+                enhanced_df.loc[idx, 'min_related_price_ratio'] = np.min(price_ratios)
+                enhanced_df.loc[idx, 'max_related_price_ratio'] = np.max(price_ratios)
+            else:
+                # Default to 1.0 (neutral price ratio) if no data
+                enhanced_df.loc[idx, 'avg_related_price_ratio'] = 1.0
+                enhanced_df.loc[idx, 'min_related_price_ratio'] = 1.0
+                enhanced_df.loc[idx, 'max_related_price_ratio'] = 1.0
+            
+            if promo_col is not None and promo_col in df.columns and related_promos:
+                enhanced_df.loc[idx, 'num_related_promos'] = sum(related_promos)
+                enhanced_df.loc[idx, 'joint_promos'] = joint_promos
+    
+    # Fill any remaining NAs - sometimes pivot operations can create NAs
+    price_ratio_cols = ['avg_related_price_ratio', 'min_related_price_ratio', 'max_related_price_ratio']
+    for col in price_ratio_cols:
+        enhanced_df[col] = enhanced_df[col].fillna(1.0)  # Neutral value
+    
+    if promo_col is not None and promo_col in df.columns:
+        enhanced_df['num_related_promos'] = enhanced_df['num_related_promos'].fillna(0)
+        enhanced_df['joint_promos'] = enhanced_df['joint_promos'].fillna(0)
+    
+    # Check for any remaining NAs in our added columns
+    for col in enhanced_df.columns:
+        if col not in df.columns and enhanced_df[col].isna().any():
+            logger.warning(f"Column {col} still has {enhanced_df[col].isna().sum()} NA values after processing")
     
     return enhanced_df
-
-def add_category_aggregates(df, sku_col='sku', date_col='date', demand_col='demand', 
-                          category_col=None, num_periods=7):
-    """
-    Add category-level aggregate features
-    
-    Args:
-        df: DataFrame with demand data
-        sku_col: Name of the SKU column
-        date_col: Name of the date column
-        demand_col: Name of the demand column
-        category_col: Name of the category column (if available)
-        num_periods: Number of periods for trend calculation
-        
-    Returns:
-        DataFrame with added category aggregate features
-    """
-    logger.info("Adding category aggregate features")
-    
-    # Create a copy of the dataframe
-    enhanced_df = df.copy()
-    
-    # Determine categories
-    if category_col is not None and category_col in df.columns:
-        # Use provided category column
-        categories = df[category_col].unique()
-        category_mapping = df[[sku_col, category_col]].drop_duplicates().set_index(sku_col)[category_col].to_dict()
-    else:
-        # Treat all SKUs as one category
-        categories = ['all']
-        category_mapping = {sku: 'all' for sku in df[sku_col].unique()}
-    
-    # Create pivot of demand
-    demand_pivot = df.pivot_table(index=date_col, columns=sku_col, values=demand_col, fill_value=0)
-    
-    # Calculate category aggregates for each date
-    category_totals = {}
-    category_trends = {}
-    
-    for category in categories:
-        # Get SKUs in this category
-        category_skus = [sku for sku, cat in category_mapping.items() if cat == category]
-        
-        # Skip if no SKUs in this category
-        if not category_skus:
-            continue
-        
-        # Calculate daily category total
-        category_demand = demand_pivot[category_skus].sum(axis=1)
-        category_totals[category] = category_demand
-        
-        # Calculate trend
-        category_trends[category] = category_demand.rolling(window=num_periods).mean()
-    
-    # Add features to each row
-    for index, row in tqdm(enhanced_df.iterrows(), total=len(enhanced_df)):
-        sku = row[sku_col]
-        date = row[date_col]
-        category = category_mapping.get(sku)
-        
-        if category is None or date not in demand_pivot.index:
-            continue
-        
-        # Category total demand
-        if category in category_totals and date in category_totals[category].index:
-            category_total = category_totals[category].loc[date]
-            enhanced_df.loc[index, 'category_total_demand'] = category_total
-            
-            # Calculate SKU's share of category
-            if category_total > 0:
-                enhanced_df.loc[index, 'category_share'] = row[demand_col] / category_total
-        
-        # Category trend
-        if category in category_trends and date in category_trends[category].index:
-            category_trend = category_trends[category].loc[date]
-            
-            if pd.notnull(category_trend):
-                enhanced_df.loc[index, 'category_trend'] = category_trend
-                
-                # Calculate trend growth rate
-                prev_date_idx = demand_pivot.index.get_loc(date) - num_periods
-                if prev_date_idx >= 0:
-                    prev_date = demand_pivot.index[prev_date_idx]
-                    if prev_date in category_trends[category].index:
-                        prev_trend = category_trends[category].loc[prev_date]
-                        if pd.notnull(prev_trend) and prev_trend > 0:
-                            enhanced_df.loc[index, 'category_growth_rate'] = category_trend / prev_trend - 1
-    
-    return enhanced_df
-
-def main(df, price_col='price', demand_col='demand', sku_col='sku', 
-        date_col='date', promo_col=None, category_col=None, 
-        top_n=3, min_periods=30):
-    """
-    Main function to analyze and incorporate cross-product effects
-    
-    Args:
-        df: DataFrame with price, demand, and optional promo data
-        price_col: Name of the price column
-        demand_col: Name of the demand column
-        sku_col: Name of the SKU column
-        date_col: Name of the date column
-        promo_col: Name of the promotion column (if available)
-        category_col: Name of the category column (if available)
-        top_n: Number of top related products to return
-        min_periods: Minimum periods of overlap required
-        
-    Returns:
-        Enhanced DataFrame with cross-product features
-    """
-    # 1. Find top related products
-    related_products = find_top_related_products(
-        df,
-        price_col=price_col,
-        demand_col=demand_col,
-        sku_col=sku_col,
-        date_col=date_col,
-        top_n=top_n,
-        min_periods=min_periods
-    )
-    
-    # 2. Generate cross-product features
-    enhanced_df = generate_cross_product_features(
-        df,
-        related_products,
-        price_col=price_col,
-        sku_col=sku_col,
-        date_col=date_col,
-        promo_col=promo_col
-    )
-    
-    # 3. Add category aggregates
-    enhanced_df = add_category_aggregates(
-        enhanced_df,
-        sku_col=sku_col,
-        date_col=date_col,
-        demand_col=demand_col,
-        category_col=category_col
-    )
-    
-    return enhanced_df, related_products
-
-if __name__ == "__main__":
-    # This is a sample usage - in reality, you would load your own data
-    import numpy as np
-    
-    # Create synthetic data
-    dates = pd.date_range(start="2022-01-01", end="2023-12-31", freq="D")
-    skus = [f"SKU_{i}" for i in range(1, 6)]
-    categories = ["Fresh", "Dairy", "Fresh", "Dairy", "Fresh"]
-    
-    data = []
-    
-    for sku_idx, sku in enumerate(skus):
-        base_price = 5 + sku_idx
-        base_demand = 100 - sku_idx * 10
-        category = categories[sku_idx]
-        
-        for date in dates:
-            # Price with some randomness and occasional promotions
-            is_promo = np.random.random() < 0.1
-            price = base_price * (0.8 if is_promo else 1.0) * np.random.normal(1, 0.05)
-            
-            # Demand with price elasticity, seasonality, and noise
-            price_effect = -0.5 * (price / base_price - 1)
-            season_effect = 0.2 * np.sin(2 * np.pi * date.month / 12)
-            noise = np.random.normal(0, 0.1)
-            
-            demand = base_demand * (1 + price_effect + season_effect + noise)
-            demand = max(0, demand)
-            
-            data.append({
-                "sku": sku,
-                "date": date,
-                "price": price,
-                "demand": demand,
-                "promo": 1 if is_promo else 0,
-                "category": category
-            })
-    
-    sample_df = pd.DataFrame(data)
-    
-    # Run the main function
-    enhanced_df, related_products = main(
-        sample_df,
-        price_col='price',
-        demand_col='demand',
-        sku_col='sku',
-        date_col='date',
-        promo_col='promo',
-        category_col='category'
-    )
-    
-    # Print results
-    print("Enhanced DataFrame columns:", enhanced_df.columns.tolist())
-    print("\nSample of enhanced data:")
-    print(enhanced_df.sample(5))
-    
-    print("\nRelated products:")
-    for sku, related in related_products.items():
-        if related:
-            print(f"{sku}:")
-            for product in related:
-                print(f"  - {product['related_sku']} ({product['effect_type']}, elasticity: {product['elasticity']:.3f})")

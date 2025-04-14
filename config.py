@@ -13,18 +13,18 @@ DEFAULT_CONFIG = {
         "num_skus": 5             # Number of SKUs for synthetic data
     },
     "model": {
-        "max_encoder_length": 60,    # Maximum encoder length (lookback)
+        "max_encoder_length": 90,    # Maximum encoder length (lookback) - Increased from 60 to 90
         "max_prediction_length": 35,  # Forecast horizon (looking forward)
-        "hidden_size": 32,           # Hidden dimension in TFT
-        "attention_head_size": 1,    # Number of attention heads
-        "dropout": 0.1,              # Dropout rate
-        "hidden_continuous_size": 16, # Hidden continuous size
-        "learning_rate": 0.01        # Learning rate for optimizer
+        "hidden_size": 128,           # Hidden dimension in TFT - Increased from 32 to 128
+        "attention_head_size": 4,    # Number of attention heads - Increased from 1 to 4
+        "dropout": 0.2,              # Dropout rate - Increased from 0.1 to 0.2
+        "hidden_continuous_size": 64, # Hidden continuous size - Increased from 16 to 64
+        "learning_rate": 0.001        # Learning rate for optimizer - Decreased from 0.01 to 0.001
     },
     "training": {
-        "batch_size": 64,            # Batch size for training
-        "num_epochs": 10,            # Maximum number of epochs
-        "early_stopping_patience": 3, # Early stopping patience
+        "batch_size": 32,            # Batch size for training - Decreased from 64 to 32
+        "num_epochs": 50,            # Maximum number of epochs - Increased from 10 to 50
+        "early_stopping_patience": 10, # Early stopping patience - Increased from 3 to 10
         "log_interval": 10           # Log interval for batches
     },
     "output": {
@@ -38,18 +38,18 @@ DEFAULT_CONFIG = {
 YEAR_ROUND_CONFIG = {
     "data": DEFAULT_CONFIG["data"],
     "model": {
-        "max_encoder_length": 60,
+        "max_encoder_length": 90,
         "max_prediction_length": 35,
-        "hidden_size": 64,            # Increased for complex patterns
-        "attention_head_size": 4,     # Multiple heads for better attention
-        "dropout": 0.1,
-        "hidden_continuous_size": 32,  # Larger for more capacity
-        "learning_rate": 0.001        # Lower learning rate for stability
+        "hidden_size": 160,            # Increased from 64 to 160
+        "attention_head_size": 4,     
+        "dropout": 0.2,
+        "hidden_continuous_size": 64,  # Increased from 32 to 64
+        "learning_rate": 0.001        
     },
     "training": {
-        "batch_size": 64,
-        "num_epochs": 50,             # More epochs for convergence
-        "early_stopping_patience": 5,  # More patience
+        "batch_size": 32,
+        "num_epochs": 50,
+        "early_stopping_patience": 10,
         "log_interval": 10
     },
     "output": DEFAULT_CONFIG["output"]
@@ -59,18 +59,18 @@ YEAR_ROUND_CONFIG = {
 SEASONAL_CONFIG = {
     "data": DEFAULT_CONFIG["data"],
     "model": {
-        "max_encoder_length": 90,      # Longer lookback for seasonal patterns
+        "max_encoder_length": 120,      # Longer lookback for seasonal patterns - Increased from 90 to 120
         "max_prediction_length": 35,
-        "hidden_size": 128,            # Much larger for capturing complex seasonality
+        "hidden_size": 160,            # Increased from 128 to 160
         "attention_head_size": 4,
-        "dropout": 0.2,                # Higher dropout to prevent overfitting
+        "dropout": 0.2,               
         "hidden_continuous_size": 64,
         "learning_rate": 0.001
     },
     "training": {
-        "batch_size": 32,              # Smaller batch size for detailed learning
-        "num_epochs": 100,             # Many epochs for seasonal learning
-        "early_stopping_patience": 10, # Much more patience
+        "batch_size": 32,
+        "num_epochs": 100,             # Increased from 50 to 100
+        "early_stopping_patience": 15, # Increased from 10 to 15
         "log_interval": 5
     },
     "output": DEFAULT_CONFIG["output"]
@@ -80,18 +80,18 @@ SEASONAL_CONFIG = {
 SEMI_SEASONAL_CONFIG = {
     "data": DEFAULT_CONFIG["data"],
     "model": {
-        "max_encoder_length": 75,      # Medium lookback
+        "max_encoder_length": 90,
         "max_prediction_length": 35,
-        "hidden_size": 96,             # Balanced size
-        "attention_head_size": 3,      # Balanced attention
-        "dropout": 0.15,               # Medium dropout
-        "hidden_continuous_size": 48,
-        "learning_rate": 0.002
+        "hidden_size": 128,
+        "attention_head_size": 4,
+        "dropout": 0.2,
+        "hidden_continuous_size": 64,
+        "learning_rate": 0.001
     },
     "training": {
-        "batch_size": 48,
+        "batch_size": 32,
         "num_epochs": 75,
-        "early_stopping_patience": 7,
+        "early_stopping_patience": 10,
         "log_interval": 8
     },
     "output": DEFAULT_CONFIG["output"]
@@ -103,14 +103,14 @@ NEW_SKU_CONFIG = {
     "model": {
         "max_encoder_length": 30,      # Short lookback (limited history)
         "max_prediction_length": 35,
-        "hidden_size": 48,             # Medium size
+        "hidden_size": 64,             # Smaller size for limited data
         "attention_head_size": 2,
         "dropout": 0.1,
-        "hidden_continuous_size": 24,
+        "hidden_continuous_size": 32,
         "learning_rate": 0.005         # Higher learning rate to learn quickly
     },
     "training": {
-        "batch_size": 32,
+        "batch_size": 16,              # Smaller batch size
         "num_epochs": 30,              # Fewer epochs (limited data)
         "early_stopping_patience": 5,
         "log_interval": 5

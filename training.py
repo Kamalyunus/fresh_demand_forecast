@@ -1,11 +1,15 @@
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
+import os
+import numpy as np
 
-def train_model(model, train_dataloader, val_dataloader, num_epochs=10, 
-               learning_rate=0.01, early_stopping_patience=3, log_interval=10):
-    """Train the model with early stopping and logging"""
-    print("Training model...")
+def train_model(model, train_dataloader, val_dataloader, num_epochs=50,  # Increased from 10 to 50
+               learning_rate=0.001,  # Decreased from 0.01 to 0.001
+               early_stopping_patience=10,  # Increased from 3 to 10
+               log_interval=10):
+    """Train the model with improved training regime"""
+    print("Training model with improved parameters...")
     
     # Move model to GPU if available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -13,14 +17,20 @@ def train_model(model, train_dataloader, val_dataloader, num_epochs=10,
     
     model = model.to(device)
     
-    # Create optimizer
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # Create optimizer with weight decay
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-2)
+    
+    # Create learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
     
     # Training loop
     train_losses = []
     val_losses = []
     best_val_loss = float('inf')
     patience_counter = 0
+    best_model_path = "best_model.pth"
     
     for epoch in range(num_epochs):
         # Training
@@ -53,6 +63,10 @@ def train_model(model, train_dataloader, val_dataloader, num_epochs=10,
             
             # Backward pass and optimize
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             # Track loss
@@ -101,12 +115,17 @@ def train_model(model, train_dataloader, val_dataloader, num_epochs=10,
         avg_val_loss = epoch_val_loss / val_batches
         val_losses.append(avg_val_loss)
         
+        # Step the scheduler based on validation loss
+        scheduler.step(avg_val_loss)
+        
+        # Print epoch results
         print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        print(f"Current learning rate: {optimizer.param_groups[0]['lr']:.6f}")
         
         # Early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), "best_model.pth")
+            torch.save(model.state_dict(), best_model_path)
             patience_counter = 0
             print(f"New best model saved with validation loss: {best_val_loss:.4f}")
         else:
@@ -118,7 +137,9 @@ def train_model(model, train_dataloader, val_dataloader, num_epochs=10,
                 break
     
     # Load best model
-    model.load_state_dict(torch.load("best_model.pth"))
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path))
+        print(f"Loaded best model from {best_model_path}")
     
     # Return training history
     history = {
