@@ -3,3 +3,8 @@ __pycache__/
 plots/
 forecasts/
 models/
+tft/
+lightning_logs/
+optuna_test/
+test_study.pkl
+output/

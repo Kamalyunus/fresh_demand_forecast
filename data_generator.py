@@ -1,46 +1,78 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
-def create_synthetic_data(start_date="2022-01-01", end_date="2023-12-31", num_skus=5):
-    """Generate synthetic demand data with seasonality and patterns"""
+def create_synthetic_data(start_date="2022-01-01", end_date="2023-12-31", num_skus=30):
+    """
+    Generate synthetic demand data with seasonality and patterns
+    Returns data in format required by main.py
+    """
     # Create date range
     dates = pd.date_range(start=start_date, end=end_date, freq="D")
     
-    # Create SKUs
+    # Create SKUs with different patterns
     skus = [f"SKU_{i}" for i in range(1, num_skus + 1)]
     
     # Create dataframe
     data = []
     
-    # Create time index
-    time_idx_map = {date: idx for idx, date in enumerate(dates)}
-    
     # Generate data for each SKU
     for sku in skus:
+        # Base demand varies by SKU
         base_demand = np.random.randint(50, 200)
+        base_price = float(sku.split('_')[1]) * 10  # Base price for each SKU
+        
+        # Determine segment (affects seasonality)
+        segment = np.random.choice(['year_round', 'highly_seasonal', 'semi_seasonal', 'new_sku'])
         
         for date in dates:
-            # Simple seasonality and weekday effects
+            # Base seasonality
             month_effect = 1.0 + 0.2 * np.sin(2 * np.pi * date.month / 12.0)
+            
+            # Weekend effect
             weekday_effect = 1.0 + 0.3 * (date.dayofweek >= 5)  # Weekend boost
+            
+            # Segment-specific patterns
+            if segment == 'highly_seasonal':
+                seasonality = 1.0 + 0.5 * np.sin(2 * np.pi * date.month / 12.0)
+            elif segment == 'semi_seasonal':
+                seasonality = 1.0 + 0.3 * np.sin(2 * np.pi * date.month / 12.0)
+            elif segment == 'new_sku':
+                # New SKUs have increasing trend
+                days_since_start = (date - pd.to_datetime(start_date)).days
+                trend = 1.0 + 0.001 * days_since_start
+                seasonality = 1.0
+            else:  # year_round
+                seasonality = 1.0
             
             # Random noise
             noise = np.random.normal(1.0, 0.1)
             
-            # Calculate demand
-            demand = base_demand * month_effect * weekday_effect * noise
-            demand = max(0, demand)
+            # Calculate volume
+            volume = base_demand * month_effect * weekday_effect * seasonality * noise
+            if segment == 'new_sku':
+                volume = volume * trend
+            volume = max(0, int(volume))
             
             # Create record
             record = {
                 "sku": sku,
                 "date": date,
-                "time_idx": time_idx_map[date],
-                "demand": demand,
+                "volume": volume,
+                "segment": segment,
+                "base_price": base_price,
                 "month": date.month,
                 "day_of_week": date.dayofweek,
                 "day_of_month": date.day,
-                "week_of_year": date.isocalendar()[1]
+                "week_of_year": date.isocalendar()[1],
+                "holiday": 0,  # Default to no holiday
+                "promotion": 0,  # Default to no promotion
+                "special_event": 0,  # Default to no special event
+                "is_holiday": 0,  # Binary holiday indicator
+                "is_promotion": 0,  # Binary promotion indicator
+                "promotion_depth": 0.0,  # Default promotion depth
+                "days_until_holiday": 365,  # Default days until holiday
+                "days_since_holiday": 365,  # Default days since holiday
             }
             
             data.append(record)
@@ -54,12 +86,55 @@ def create_synthetic_data(start_date="2022-01-01", end_date="2023-12-31", num_sk
     df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7.0)
     df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7.0)
     
-    # Add price data for cross-effects analysis
-    df['price'] = df['sku'].apply(lambda x: float(x.split('_')[1]) * 10).astype(float)
-    # Add random variations
-    df['price'] = df.apply(lambda row: row['price'] * (0.9 + 0.2 * np.random.random()), axis=1)
-    # Add occasional promotions
-    df['promo'] = np.random.choice([0, 1], size=len(df), p=[0.9, 0.1])
+    # Add price data
+    df['price'] = df['base_price'] * df.apply(lambda row: 0.9 + 0.2 * np.random.random(), axis=1)
+    
+    # Add holiday indicators
+    holidays = [
+        # New Year's Day
+        "2022-01-01", "2023-01-01",
+        # Memorial Day (last Monday in May)
+        "2022-05-30", "2023-05-29",
+        # Independence Day
+        "2022-07-04", "2023-07-04",
+        # Labor Day (first Monday in September)
+        "2022-09-05", "2023-09-04",
+        # Thanksgiving (fourth Thursday in November)
+        "2022-11-24", "2023-11-23",
+        # Christmas
+        "2022-12-25", "2023-12-25"
+    ]
+    holiday_dates = pd.to_datetime(holidays)
+    df.loc[df['date'].isin(holiday_dates), ['holiday', 'is_holiday']] = 1
+    
+    # Calculate days until and since holidays
+    for date in holiday_dates:
+        days_until = (date - df['date']).dt.days
+        days_since = (df['date'] - date).dt.days
+        
+        # Update days until next holiday
+        mask = (days_until > 0) & (days_until < df['days_until_holiday'])
+        df.loc[mask, 'days_until_holiday'] = days_until[mask]
+        
+        # Update days since last holiday
+        mask = (days_since > 0) & (days_since < df['days_since_holiday'])
+        df.loc[mask, 'days_since_holiday'] = days_since[mask]
+    
+    # Add promotion indicators and depth (10% chance of promotion)
+    promotion_mask = np.random.choice([0, 1], size=len(df), p=[0.9, 0.1])
+    df.loc[promotion_mask == 1, ['promotion', 'is_promotion']] = 1
+    df.loc[promotion_mask == 1, 'promotion_depth'] = np.random.uniform(0.1, 0.5, size=promotion_mask.sum())
+    
+    # Add special event indicators (5% chance of special event)
+    df['special_event'] = np.random.choice([0, 1], size=len(df), p=[0.95, 0.05])
+    
+    # Calculate average historical volume for each SKU
+    df['avg_historical_volume'] = df.groupby('sku')['volume'].transform('mean')
+    
+    # Save to CSV
+    df.to_csv('data.csv', index=False)
+    print(f"Generated sample data with {len(df)} records and {df['sku'].nunique()} SKUs")
+    print("Data saved to data.csv")
     
     return df
 
@@ -70,19 +145,14 @@ def load_real_data(file_path):
     # Ensure date is in datetime format
     df["date"] = pd.to_datetime(df["date"])
     
-    # Create time index if not present
-    if "time_idx" not in df.columns:
-        dates = df["date"].sort_values().unique()
-        time_idx_map = {date: idx for idx, date in enumerate(dates)}
-        df["time_idx"] = df["date"].map(time_idx_map)
-    
-    # Add cyclical features if not present
-    if "month_sin" not in df.columns:
-        df["month"] = df["date"].dt.month
-        df["day_of_week"] = df["date"].dt.dayofweek
-        df["day_of_month"] = df["date"].dt.day
-        df["week_of_year"] = df["date"].dt.isocalendar().week
+    # Add time-based features if not present
+    if "month" not in df.columns:
+        df['month'] = df['date'].dt.month
+        df['day_of_week'] = df['date'].dt.dayofweek
+        df['day_of_month'] = df['date'].dt.day
+        df['week_of_year'] = df['date'].dt.isocalendar().week
         
+        # Add cyclical features
         df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12.0)
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12.0)
         df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7.0)
@@ -91,27 +161,26 @@ def load_real_data(file_path):
     return df
 
 def add_lag_features(df, lags=[7, 14, 28]):
-    """Add lagged demand features"""
+    """Add lagged volume features"""
     print("Adding lag features...")
     for lag in lags:
-        df[f'demand_lag_{lag}'] = df.groupby("sku")["demand"].shift(lag)
+        df[f'volume_lag_{lag}'] = df.groupby("sku")["volume"].shift(lag)
     return df
 
 def add_rolling_statistics(df, windows=[7, 14, 28]):
-    """Add rolling demand statistics"""
+    """Add rolling volume statistics"""
     print("Adding rolling statistics...")
     for window in windows:
-        df[f'demand_rolling_mean_{window}'] = df.groupby("sku")["demand"].transform(
+        df[f'volume_rolling_mean_{window}'] = df.groupby("sku")["volume"].transform(
             lambda x: x.rolling(window=window, min_periods=1).mean())
-        df[f'demand_rolling_std_{window}'] = df.groupby("sku")["demand"].transform(
+        df[f'volume_rolling_std_{window}'] = df.groupby("sku")["volume"].transform(
             lambda x: x.rolling(window=window, min_periods=1).std().fillna(0))
     return df
 
 def add_holiday_indicators(df):
-    """Add explicit holiday indicators"""
+    """Add holiday indicators"""
     print("Adding holiday indicators...")
-    # This is a simplified approach - in practice, use a calendar library
-    # Create US major holiday indicators (example)
+    # Create US major holiday indicators
     holidays = [
         # New Year's Day
         "2022-01-01", "2023-01-01",
@@ -127,33 +196,8 @@ def add_holiday_indicators(df):
         "2022-12-25", "2023-12-25"
     ]
     
-    # Convert to datetime
     holiday_dates = pd.to_datetime(holidays)
-    
-    # Create holiday flag
     df['is_holiday'] = df['date'].isin(holiday_dates).astype(int)
-    
-    # Add days until and days since closest holiday
-    df['days_to_holiday'] = float('inf')
-    df['days_since_holiday'] = float('inf')
-    
-    for holiday in holiday_dates:
-        days_to = (holiday - df['date']).dt.days
-        days_since = (df['date'] - holiday).dt.days
-        
-        # Only consider future holidays for days_to
-        days_to = pd.Series([d if d > 0 else float('inf') for d in days_to])
-        # Only consider past holidays for days_since
-        days_since = pd.Series([d if d > 0 else float('inf') for d in days_since])
-        
-        df['days_to_holiday'] = df[['days_to_holiday']].join(
-            days_to.rename('new_days_to')).min(axis=1)
-        df['days_since_holiday'] = df[['days_since_holiday']].join(
-            days_since.rename('new_days_since')).min(axis=1)
-    
-    # Replace infinite values
-    df['days_to_holiday'] = df['days_to_holiday'].replace(float('inf'), 365)
-    df['days_since_holiday'] = df['days_since_holiday'].replace(float('inf'), 365)
     
     return df
 
@@ -205,15 +249,15 @@ def prepare_data_for_training(df, max_prediction_length=35):
     df["is_holiday"] = df["is_holiday"].astype(str)
     
     # Define training cutoff
-    training_cutoff = df["time_idx"].max() - max_prediction_length
+    training_cutoff = df["date"].max() - pd.Timedelta(days=max_prediction_length)
     
     # Create training dataset
-    training_data = df[df["time_idx"] <= training_cutoff]
-    validation_data = df[df["time_idx"] > training_cutoff]
+    training_data = df[df["date"] <= training_cutoff]
+    validation_data = df[df["date"] > training_cutoff]
     
     # Fill NAs in lag features
     for col in df.columns:
-        if col.startswith('demand_lag_') or col.startswith('demand_rolling_'):
+        if col.startswith('volume_lag_') or col.startswith('volume_rolling_'):
             training_data[col] = training_data[col].fillna(0)
             validation_data[col] = validation_data[col].fillna(0)
     

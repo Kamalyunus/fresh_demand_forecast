@@ -1,0 +1,11 @@
+torch
+torchvision
+torchaudio
+pytorch-forecasting
+pyarrow
+tensorboardX
+pytorch_optimizer
+optuna 
+statsmodels
+optuna-integration[pytorch_lightning]
+matplotlib

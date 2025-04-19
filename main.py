@@ -1,207 +1,372 @@
-# main.py
 import os
 import warnings
 import numpy as np
+import pandas as pd
+from pathlib import Path
+import logging
+import matplotlib.pyplot as plt
+import seaborn as sns
+import torch
+from tft_forecast import TFTForecaster
+from tft_config import SEGMENT_CONFIGS, TRAINING_CONFIG, HYPERPARAM_OPT_CONFIG
+from data_generator import create_synthetic_data
 warnings.filterwarnings("ignore")
 
-from data_generator import create_synthetic_data, load_real_data, prepare_data_for_training
-from model import create_training_dataset, create_dataloaders, create_tft_model
-from training import train_model
-from evaluation import evaluate_model
-from prediction import generate_forecasts
-from visualization import (
-    plot_training_history, 
-    plot_feature_importance, 
-    plot_forecast, 
-    plot_all_forecasts,
-    plot_seasonal_patterns
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def load_data(data_path):
+    """Load and preprocess the data"""
+    logger.info("Loading data...")
+    
+    # Check if data file exists, if not generate sample data
+    if not os.path.exists(data_path):
+        logger.info("Data file not found. Generating sample data...")
+        create_synthetic_data()
+        logger.info("Sample data generated successfully!")
+    
+    data = pd.read_csv(data_path)
+    data['date'] = pd.to_datetime(data['date'])
+    
+    # Ensure numeric columns are float
+    numeric_columns = ["volume", "price", "base_price", "promotion_depth"]
+    for col in numeric_columns:
+        if col in data.columns:
+            data[col] = data[col].astype(float)
+    
+    # Ensure all required columns exist
+    required_columns = [
+        "time_idx", "volume", "sku", "segment", "month", "price",
+        "holiday", "promotion", "special_event", "day_of_week"
+    ]
+    
+    # Add time index if not present
+    if "time_idx" not in data.columns:
+        data["time_idx"] = data["date"].dt.year * 365 + data["date"].dt.dayofyear
+        data["time_idx"] -= data["time_idx"].min()
+    
+    # Convert categorical columns to string type
+    categorical_columns = [
+        "sku", "segment", "month", "holiday", "promotion", 
+        "special_event", "day_of_week", "is_holiday", "is_promotion"
+    ]
+    for col in categorical_columns:
+        if col in data.columns:
+            data[col] = data[col].astype(str)
+    
+    # Fill any missing columns with default values
+    for col in required_columns:
+        if col not in data.columns:
+            if col == "holiday":
+                data[col] = "0"
+            elif col == "promotion":
+                data[col] = "0"
+            elif col == "special_event":
+                data[col] = "0"
+            elif col == "price":
+                data[col] = data.get("base_price", 10.0).astype(float)
+            elif col == "day_of_week":
+                data[col] = data["date"].dt.dayofweek.astype(str)
+    
+    return data
+
+def segment_skus(data):
+    """Segment SKUs based on sales patterns"""
+    logger.info("Segmenting SKUs...")
+    
+    # If segment is already in the data, use it
+    if 'segment' in data.columns:
+        return data
+    
+    # Calculate metrics for segmentation
+    sku_metrics = data.groupby('sku').agg({
+        'volume': [
+            ('total_days', 'count'),
+            ('zero_days', lambda x: (x == 0).sum()),
+            ('cv', lambda x: x.std() / x.mean() if x.mean() > 0 else np.inf)
+        ]
+    }).reset_index()
+    
+    sku_metrics.columns = ['sku', 'total_days', 'zero_days', 'cv']
+    
+    # Assign segments
+    sku_metrics['segment'] = 'new_sku'  # Default segment
+    
+    # Year-round items: Sales in ≥90% of days
+    year_round_mask = (sku_metrics['total_days'] >= 0.9 * data['date'].nunique())
+    sku_metrics.loc[year_round_mask, 'segment'] = 'year_round'
+    
+    # Highly seasonal items: Zero sales for ≥60% of year
+    seasonal_mask = (sku_metrics['zero_days'] / sku_metrics['total_days'] >= 0.6)
+    sku_metrics.loc[seasonal_mask, 'segment'] = 'highly_seasonal'
+    
+    # Semi-seasonal items: High variation (>100% coefficient)
+    semi_seasonal_mask = (sku_metrics['cv'] > 1.0) & ~year_round_mask & ~seasonal_mask
+    sku_metrics.loc[semi_seasonal_mask, 'segment'] = 'semi_seasonal'
+    
+    # Merge segments back to main data
+    data = data.merge(sku_metrics[['sku', 'segment']], on='sku', how='left')
+    
+    return data
+
+def save_training_progress(trainer, segment, output_dir):
+    """Save training progress chart for a segment"""
+    logger.info(f"Saving training progress for {segment} segment...")
+    
+    # Create directory for training progress
+    progress_dir = os.path.join(output_dir, "training_progress")
+    os.makedirs(progress_dir, exist_ok=True)
+    
+    # Get training metrics
+    metrics = pd.DataFrame({
+        'epoch': range(len(trainer.callback_metrics)),
+        'train_loss': [trainer.callback_metrics.get('train_loss_epoch', 0) for _ in range(len(trainer.callback_metrics))],
+        'val_loss': [trainer.callback_metrics.get('val_loss', 0) for _ in range(len(trainer.callback_metrics))]
+    })
+    
+    # Plot training metrics
+    plt.figure(figsize=(12, 6))
+    for metric in ['train_loss', 'val_loss']:
+        if metric in metrics.columns:
+            plt.plot(metrics['epoch'], metrics[metric], label=metric)
+    
+    plt.title(f'Training Progress - {segment} Segment')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Save plot
+    plt.savefig(os.path.join(progress_dir, f'{segment}_training_progress.png'))
+    plt.close()
+
+def save_best_model(model, segment, output_dir):
+    """Save the best model for a segment"""
+    logger.info(f"Saving best model for {segment} segment...")
+    
+    # Create directory for models
+    models_dir = os.path.join(output_dir, "models")
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Save model
+    model_path = os.path.join(models_dir, f'{segment}_best_model.pt')
+    torch.save(model.state_dict(), model_path)
+    logger.info(f"Model saved to {model_path}")
+
+def train_models(data, config_path):
+    """Train TFT models for each segment"""
+    logger.info("Training models for each segment...")
+    models = {}
+    
+    for segment, config in SEGMENT_CONFIGS.items():
+        logger.info(f"Training model for {segment} segment...")
+        
+        # Filter data for segment
+        segment_data = data[data['segment'] == segment].copy()
+        if len(segment_data) == 0:
+            logger.warning(f"No data found for {segment} segment. Skipping...")
+            continue
+        
+        # Initialize forecaster
+        forecaster = TFTForecaster(config)
+        
+        # Prepare data
+        segment_data = forecaster.prepare_data(segment_data)
+        
+        # Create datasets
+        training_dataset, validation_dataset = forecaster.create_datasets(segment_data)
+        
+        # Create dataloaders
+        train_dataloader, val_dataloader = forecaster.create_dataloaders(
+            batch_size=TRAINING_CONFIG['batch_size']
+        )
+        
+        # Optimize hyperparameters
+        logger.info(f"Optimizing hyperparameters for {segment} segment...")
+        best_params = forecaster.optimize_hyperparameters(
+            train_dataloader,
+            val_dataloader,
+            n_trials=HYPERPARAM_OPT_CONFIG['n_trials']
+        )
+        
+        # Update config with best parameters
+        config.update(best_params)
+        
+        # Train model
+        logger.info(f"Training final model for {segment} segment...")
+        model, trainer = forecaster.train(train_dataloader, val_dataloader)
+        
+        # Save training progress
+        save_training_progress(trainer, segment, config_path)
+        
+        # Save best model
+        save_best_model(model, segment, config_path)
+        
+        # Store model
+        models[segment] = {
+            'model': model,
+            'forecaster': forecaster,
+            'config': config
+        }
+        
+    return models
+
+def make_predictions(model, test_data, output_dir, segment_name):
+    """Make predictions using the trained model."""
+    try:
+        # Make predictions
+        pred_output = model.predict(
+            test_data,
+            return_y=True,
+            mode="raw",
+            return_x=True
+        )
+        
+        # Convert predictions to DataFrame
+        predictions = pd.DataFrame({
+            'prediction': pred_output.output.numpy().flatten(),
+            'actual': pred_output.y.numpy().flatten()
+        })
+        
+        # Store predictions by SKU
+        predictions_by_sku = {}
+        for sku in test_data['sku'].unique():
+            sku_mask = test_data['sku'] == sku
+            predictions_by_sku[sku] = predictions[sku_mask]
+        
+        # Save feature importance if available
+        if hasattr(model, 'feature_importance'):
+            importance = model.feature_importance()
+            importance.to_csv(os.path.join(output_dir, f'{segment_name}_feature_importance.csv'))
+        
+        # Plot predictions for a few examples
+        for i, (idx, pred) in enumerate(pred_output.raw_preds.items()):
+            if i >= 3:  # Limit to 3 examples
+                break
+                
+            fig = model.plot_prediction(pred, idx)
+            fig.savefig(os.path.join(output_dir, f'{segment_name}_prediction_example_{i}.png'))
+            plt.close(fig)
+        
+        return predictions_by_sku
+        
+    except Exception as e:
+        logger.error(f"Error making predictions for {segment_name} segment: {str(e)}")
+        return None
+
+def evaluate_models(models, predictions):
+    """Evaluate model performance"""
+    logger.info("Evaluating models...")
+    results = {}
+    
+    for segment, model_info in models.items():
+        if segment not in predictions:
+            continue
+            
+        # Evaluate predictions
+        metrics = model_info['forecaster'].evaluate(predictions[segment])
+        results[segment] = metrics
+        
+        logger.info(f"{segment} segment metrics: {metrics}")
+        
+    return results
+
+def create_visualizations(data, predictions, output_dir):
+    """Create visualizations for representative SKUs from each segment"""
+    logger.info("Creating visualizations...")
+    
+    # Create output directory for visualizations
+    viz_dir = os.path.join(output_dir, "visualizations")
+    os.makedirs(viz_dir, exist_ok=True)
+    
+    # Get representative SKUs from each segment
+    segments = data['segment'].unique()
+    for segment in segments:
+        segment_data = data[data['segment'] == segment]
+        skus = segment_data['sku'].unique()
+        
+        # Select up to 3 SKUs from each segment
+        sample_skus = np.random.choice(skus, min(3, len(skus)), replace=False)
+        
+        for sku in sample_skus:
+            sku_data = segment_data[segment_data['sku'] == sku]
+            
+            # Create time series plot
+            plt.figure(figsize=(15, 6))
+            plt.plot(sku_data['date'], sku_data['volume'], label='Actual')
+            
+            # Add predictions if available
+            if sku in predictions:
+                pred_data = predictions[sku]
+                plt.plot(pred_data['date'], pred_data['prediction'], 
+                        label='Predicted', linestyle='--')
+            
+            plt.title(f'Volume over Time - {sku} ({segment})')
+            plt.xlabel('Date')
+            plt.ylabel('Volume')
+            plt.legend()
+            plt.grid(True)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            # Save plot
+            plt.savefig(os.path.join(viz_dir, f'{sku}_volume.png'))
+            plt.close()
+            
+            # Create feature importance plot if available
+            if f'{segment}_feature_importance' in predictions:
+                feature_importance = predictions[f'{segment}_feature_importance']
+                plt.figure(figsize=(10, 6))
+                sns.barplot(x='importance', y='feature', data=feature_importance)
+                plt.title(f'Feature Importance - {sku} ({segment})')
+                plt.tight_layout()
+                plt.savefig(os.path.join(viz_dir, f'{sku}_feature_importance.png'))
+                plt.close()
+    
+    logger.info(f"Visualizations saved to {viz_dir}")
 
 def main(config=None):
-    """Main function to orchestrate the entire workflow with improved models"""
+    """Main function to orchestrate the entire workflow"""
     # Default configuration
     if config is None:
         config = {
             "data": {
-                "synthetic": True,
-                "file_path": None,
-                "start_date": "2022-01-01",
-                "end_date": "2023-12-31",
-                "num_skus": 5
-            },
-            "model": {
-                "max_encoder_length": 90,
-                "max_prediction_length": 35,
-                "hidden_size": 128,
-                "attention_head_size": 4,
-                "dropout": 0.2,
-                "hidden_continuous_size": 64,
-                "learning_rate": 0.001
-            },
-            "training": {
-                "batch_size": 32,
-                "num_epochs": 3,
-                "early_stopping_patience": 10,
-                "log_interval": 10
-            },
-            "output": {
-                "forecasts_dir": "./forecasts",
-                "plots_dir": "./plots",
-                "models_dir": "./models"
+                "file_path": "data.csv",
+                "output_dir": "output"
             }
         }
     
-    # Create output directories
-    os.makedirs(config["output"]["forecasts_dir"], exist_ok=True)
-    os.makedirs(config["output"]["plots_dir"], exist_ok=True)
-    os.makedirs(config["output"]["models_dir"], exist_ok=True)
+    # Create output directory
+    os.makedirs(config["data"]["output_dir"], exist_ok=True)
     
-    # Load or generate data
-    print("Step 1: Loading/Generating data...")
-    if config["data"]["synthetic"]:
-        df = create_synthetic_data(
-            start_date=config["data"]["start_date"],
-            end_date=config["data"]["end_date"],
-            num_skus=config["data"]["num_skus"]
-        )
-        print(f"Generated synthetic data with {df['sku'].nunique()} SKUs and {len(df)} records")
-    else:
-        df = load_real_data(config["data"]["file_path"])
-        print(f"Loaded real data with {df['sku'].nunique()} SKUs and {len(df)} records")
+    # Load data
+    data = load_data(config["data"]["file_path"])
     
-    # Analyze cross-product effects if possible
-    print("Step 2: Analyzing cross-product effects...")
-    try:
-        from cross_effects import find_top_related_products, generate_cross_product_features
-        
-        # For synthetic data, we need to make sure price column exists
-        if 'price' not in df.columns:
-            print("Adding synthetic price data for cross-effects analysis")
-            df['price'] = df['sku'].apply(lambda x: float(x.split('_')[1]) * 10 if isinstance(x, str) and '_' in x else 100).astype(float)
-            # Add random variations
-            df['price'] = df.apply(lambda row: row['price'] * (0.9 + 0.2 * np.random.random()), axis=1)
-            
-        # Add promo column if it doesn't exist
-        if 'promo' not in df.columns:
-            print("Adding synthetic promotion data")
-            df['promo'] = np.random.choice([0, 1], size=len(df), p=[0.9, 0.1])
-        
-        # Identify related products
-        related_products = find_top_related_products(
-            df, price_col='price', demand_col='demand', sku_col='sku', 
-            date_col='date', top_n=3, min_periods=30
-        )
-        
-        # Add cross-product features
-        df = generate_cross_product_features(
-            df, related_products, price_col='price', sku_col='sku',
-            date_col='date', promo_col='promo' if 'promo' in df.columns else None
-        )
-        
-        print("Successfully added cross-product features")
-    except Exception as e:
-        print(f"Warning: Could not analyze cross-product effects. Error: {e}")
-        print("Continuing without cross-product features...")
+    # Segment SKUs
+    data = segment_skus(data)
     
-    # Prepare data for training
-    print("Step 3: Preparing data for training...")
-    training_data, validation_data, training_cutoff = prepare_data_for_training(
-        df, 
-        max_prediction_length=config["model"]["max_prediction_length"]
-    )
-    print(f"Training data: {len(training_data)} records")
-    print(f"Validation data: {len(validation_data)} records")
+    # Train models
+    models = train_models(data, config["data"]["output_dir"])
     
-    # Create dataset
-    print("Step 4: Creating dataset...")
-    training_dataset = create_training_dataset(
-        training_data,
-        max_encoder_length=config["model"]["max_encoder_length"],
-        max_prediction_length=config["model"]["max_prediction_length"]
+    # Make predictions
+    predictions = {}
+    for segment, model_info in models.items():
+        predictions[segment] = make_predictions(model_info['model'], data[data['segment'] == segment], config["data"]["output_dir"], segment)
+    
+    # Evaluate models
+    results = evaluate_models(models, predictions)
+    
+    # Create visualizations
+    create_visualizations(data, predictions, config["data"]["output_dir"])
+    
+    # Save results
+    pd.DataFrame(results).to_csv(
+        os.path.join(config["data"]["output_dir"], "model_results.csv")
     )
     
-    # Create dataloaders
-    print("Step 5: Creating dataloaders...")
-    train_dataloader, val_dataloader = create_dataloaders(
-        training_dataset,
-        batch_size=config["training"]["batch_size"]
-    )
-    
-    # Create model
-    print("Step 6: Creating model...")
-    model = create_tft_model(
-        training_dataset,
-        learning_rate=config["model"]["learning_rate"],
-        hidden_size=config["model"]["hidden_size"],
-        attention_head_size=config["model"]["attention_head_size"],
-        dropout=config["model"]["dropout"],
-        hidden_continuous_size=config["model"]["hidden_continuous_size"]
-    )
-    
-    # Attach dataloaders to model for later use
-    model.train_dataloader = train_dataloader
-    model.val_dataloader = val_dataloader
-    
-    # Train model
-    print("Step 7: Training model...")
-    model, history = train_model(
-        model,
-        train_dataloader,
-        val_dataloader,
-        num_epochs=config["training"]["num_epochs"],
-        learning_rate=config["model"]["learning_rate"],
-        early_stopping_patience=config["training"]["early_stopping_patience"],
-        log_interval=config["training"]["log_interval"]
-    )
-    
-    # Save model
-    import torch
-    torch.save(model.state_dict(), f"{config['output']['models_dir']}/tft_model.pth")
-    print(f"Model saved to {config['output']['models_dir']}/tft_model.pth")
-    
-    # Plot training history
-    print("Step 8: Plotting training history...")
-    plot_training_history(history, output_dir=config["output"]["plots_dir"])
-    
-    # Try to plot feature importance
-    try:
-        print("Step 9: Plotting feature importance...")
-        plot_feature_importance(model, output_dir=config["output"]["plots_dir"])
-    except Exception as e:
-        print(f"Warning: Could not plot feature importance. Error: {e}")
-        print("Continuing with evaluation...")
-    
-    # Evaluate model
-    print("Step 10: Evaluating model with enhanced metrics...")
-    results_df, avg_metrics = evaluate_model(model, val_dataloader, training_dataset, df, training_cutoff)
-    results_df.to_csv(f"{config['output']['forecasts_dir']}/evaluation_results.csv", index=False)
-    print(f"Evaluation results saved to {config['output']['forecasts_dir']}/evaluation_results.csv")
-    
-    # Generate forecasts
-    print("Step 11: Generating forecasts...")
-    forecast_df = generate_forecasts(
-        model, 
-        training_dataset, 
-        df, 
-        output_dir=config["output"]["forecasts_dir"],
-        training_cutoff=training_cutoff
-    )
-    
-    # Plot forecasts
-    print("Step 12: Plotting forecasts...")
-    plot_all_forecasts(forecast_df, df, training_cutoff, output_dir=config["output"]["plots_dir"])
-    
-    # Plot individual forecasts and seasonal patterns for a few SKUs
-    print("Step 13: Plotting individual SKU forecasts and patterns...")
-    for sku in list(df["sku"].unique())[:min(5, len(df["sku"].unique()))]:  # Limit to first 5 SKUs
-        try:
-            plot_forecast(forecast_df, sku, output_dir=config["output"]["plots_dir"])
-            plot_seasonal_patterns(df, sku, output_dir=config["output"]["plots_dir"])
-        except Exception as e:
-            print(f"Warning: Could not plot for {sku}. Error: {e}")
-    
-    print("Process completed successfully!")
-    return df, model, forecast_df, results_df
+    logger.info("Forecasting pipeline completed successfully!")
 
 if __name__ == "__main__":
-    main()
+    main() 
