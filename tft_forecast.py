@@ -133,7 +133,7 @@ class TFTForecaster:
         )
         val_dataloader = self.validation_dataset.to_dataloader(
             train=False, 
-            batch_size=batch_size * 10, 
+            batch_size=batch_size, 
             num_workers=0
         )
         return train_dataloader, val_dataloader
@@ -216,16 +216,18 @@ class TFTForecaster:
             
         return study.best_trial.params
     
-    def predict(self, dataloader, return_y=True):
+    def predict(self, dataloader, mode="prediction", return_y=True, return_x=False):
         """Make predictions using the best model"""
         if self.best_model is None:
             raise ValueError("No trained model available. Please train the model first.")
             
         predictions = self.best_model.predict(
-            dataloader, 
-            return_y=return_y, 
+            dataloader,
+            mode=mode,
+            return_y=return_y,
+            return_x=return_x,
             trainer_kwargs=dict(accelerator="gpu", devices=1)
-        )
+    )
         return predictions
     
     def evaluate(self, predictions):

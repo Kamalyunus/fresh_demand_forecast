@@ -213,27 +213,48 @@ def train_models(data, config_path):
         
     return models
 
-def make_predictions(model, test_data, output_dir, segment_name):
+def make_predictions(model, model_info, output_dir, segment_name):
     """Make predictions using the trained model."""
     try:
+        # Get validation dataloader from the forecaster
+        val_dataloader = model_info['forecaster'].validation_dataset.to_dataloader(
+            train=False,
+            batch_size=128,
+            num_workers=0
+        )
+
         # Make predictions
-        pred_output = model.predict(
-            test_data,
+        pred_output = model_info['forecaster'].predict(
+            val_dataloader,
+            mode="prediction",
             return_y=True,
-            mode="raw",
             return_x=True
         )
+
+        # Extract predictions and actual values from the output
+        predictions_tensor = pred_output[0]  # First element of tuple is predictions
+        actual_values = pred_output[1]  # Second element is actual values (x)
+
+        # Move tensors to CPU and convert to numpy
+        predictions_np = predictions_tensor.cpu().numpy()
         
-        # Convert predictions to DataFrame
+        # Create DataFrame with predictions
+        n_samples, n_timepoints = predictions_np.shape
         predictions = pd.DataFrame({
-            'prediction': pred_output.output.numpy().flatten(),
-            'actual': pred_output.y.numpy().flatten()
+            'sample_id': np.repeat(range(n_samples), n_timepoints),
+            'time_point': np.tile(range(n_timepoints), n_samples),
+            'prediction': predictions_np.flatten()
         })
+
+        if actual_values is not None:
+            actual_np = actual_values[0].cpu().numpy()  # First element of tuple contains values
+            predictions['actual'] = actual_np.flatten()
         
         # Store predictions by SKU
         predictions_by_sku = {}
-        for sku in test_data['sku'].unique():
-            sku_mask = test_data['sku'] == sku
+        group_ids = model_info['forecaster'].validation_dataset.group_ids
+        for i, sku in enumerate(group_ids):
+            sku_mask = predictions['sample_id'] == i
             predictions_by_sku[sku] = predictions[sku_mask]
         
         # Save feature importance if available
@@ -242,13 +263,26 @@ def make_predictions(model, test_data, output_dir, segment_name):
             importance.to_csv(os.path.join(output_dir, f'{segment_name}_feature_importance.csv'))
         
         # Plot predictions for a few examples
-        for i, (idx, pred) in enumerate(pred_output.raw_preds.items()):
-            if i >= 3:  # Limit to 3 examples
-                break
-                
-            fig = model.plot_prediction(pred, idx)
-            fig.savefig(os.path.join(output_dir, f'{segment_name}_prediction_example_{i}.png'))
-            plt.close(fig)
+        for i in range(min(3, len(group_ids))):
+            plt.figure(figsize=(12, 6))
+            sku = group_ids[i]
+            sku_data = predictions_by_sku[sku]
+            
+            plt.plot(sku_data['time_point'], sku_data['prediction'], 
+                    label='Predicted', linestyle='-')
+            if 'actual' in sku_data.columns:
+                plt.plot(sku_data['time_point'], sku_data['actual'], 
+                        label='Actual', linestyle='--')
+            
+            plt.title(f'Predictions vs Actual - {sku} ({segment_name})')
+            plt.xlabel('Time Point')
+            plt.ylabel('Value')
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            
+            plt.savefig(os.path.join(output_dir, f'{segment_name}_prediction_example_{i}.png'))
+            plt.close()
         
         return predictions_by_sku
         
@@ -353,7 +387,7 @@ def main(config=None):
     # Make predictions
     predictions = {}
     for segment, model_info in models.items():
-        predictions[segment] = make_predictions(model_info['model'], data[data['segment'] == segment], config["data"]["output_dir"], segment)
+        predictions[segment] = make_predictions(model_info['model'], model_info, config["data"]["output_dir"], segment)
     
     # Evaluate models
     results = evaluate_models(models, predictions)

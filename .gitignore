@@ -9,3 +9,4 @@ optuna_test/
 test_study.pkl
 output/
 data.csv
+tft_study.pkl
