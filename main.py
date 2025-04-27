@@ -18,14 +18,10 @@ logger = logging.getLogger(__name__)
 
 def load_data(data_path):
     """Load and preprocess the data"""
-    logger.info("Loading data...")
-    
-    # Check if data file exists, if not generate sample data
-    if not os.path.exists(data_path):
-        logger.info("Data file not found. Generating sample data...")
-        create_synthetic_data()
-        logger.info("Sample data generated successfully!")
-    
+    create_synthetic_data()
+    logger.info("Sample data generated successfully!")
+
+    logger.info("Loading data...")    
     data = pd.read_csv(data_path)
     data['date'] = pd.to_datetime(data['date'])
     
@@ -110,38 +106,6 @@ def segment_skus(data):
     
     return data
 
-def save_training_progress(trainer, segment, output_dir):
-    """Save training progress chart for a segment"""
-    logger.info(f"Saving training progress for {segment} segment...")
-    
-    # Create directory for training progress
-    progress_dir = os.path.join(output_dir, "training_progress")
-    os.makedirs(progress_dir, exist_ok=True)
-    
-    # Get training metrics
-    metrics = pd.DataFrame({
-        'epoch': range(len(trainer.callback_metrics)),
-        'train_loss': [trainer.callback_metrics.get('train_loss_epoch', 0) for _ in range(len(trainer.callback_metrics))],
-        'val_loss': [trainer.callback_metrics.get('val_loss', 0) for _ in range(len(trainer.callback_metrics))]
-    })
-    
-    # Plot training metrics
-    plt.figure(figsize=(12, 6))
-    for metric in ['train_loss', 'val_loss']:
-        if metric in metrics.columns:
-            plt.plot(metrics['epoch'], metrics[metric], label=metric)
-    
-    plt.title(f'Training Progress - {segment} Segment')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    
-    # Save plot
-    plt.savefig(os.path.join(progress_dir, f'{segment}_training_progress.png'))
-    plt.close()
-
 def save_best_model(model, segment, output_dir):
     """Save the best model for a segment"""
     logger.info(f"Saving best model for {segment} segment...")
@@ -193,13 +157,11 @@ def train_models(data, config_path):
         
         # Update config with best parameters
         config.update(best_params)
-        
+        logger.info(f"best_param for {segment} segment...{best_params}")
+
         # Train model
         logger.info(f"Training final model for {segment} segment...")
         model, trainer = forecaster.train(train_dataloader, val_dataloader)
-        
-        # Save training progress
-        save_training_progress(trainer, segment, config_path)
         
         # Save best model
         save_best_model(model, segment, config_path)
