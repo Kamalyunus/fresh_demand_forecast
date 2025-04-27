@@ -9,3 +9,4 @@ optuna
 statsmodels
 optuna-integration[pytorch_lightning]
 matplotlib
+korean_lunar_calendar
