@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-def create_synthetic_data(start_date="2022-01-01", end_date="2023-12-31", num_skus=30):
+def create_synthetic_data(start_date="2020-01-01", end_date="2023-12-31", num_skus=100):
     """
     Generate synthetic demand data with seasonality and patterns
     Returns data in format required by main.py
@@ -19,34 +19,35 @@ def create_synthetic_data(start_date="2022-01-01", end_date="2023-12-31", num_sk
     # Generate data for each SKU
     for sku in skus:
         # Base demand varies by SKU
-        base_demand = np.random.randint(50, 200)
+        base_demand = np.random.randint(50, 500)  # Increased range for more variation
         base_price = float(sku.split('_')[1]) * 10  # Base price for each SKU
         
         # Determine segment (affects seasonality)
-        segment = np.random.choice(['year_round', 'highly_seasonal', 'semi_seasonal', 'new_sku'])
+        segment = np.random.choice(['year_round', 'highly_seasonal', 'semi_seasonal', 'new_sku'], 
+                                 p=[0.3, 0.3, 0.3, 0.1])  # Adjusted probabilities
         
         for date in dates:
             # Base seasonality
-            month_effect = 1.0 + 0.2 * np.sin(2 * np.pi * date.month / 12.0)
+            month_effect = 1.0 + 0.3 * np.sin(2 * np.pi * date.month / 12.0)  # Increased seasonality
             
             # Weekend effect
-            weekday_effect = 1.0 + 0.3 * (date.dayofweek >= 5)  # Weekend boost
+            weekday_effect = 1.0 + 0.4 * (date.dayofweek >= 5)  # Increased weekend boost
             
             # Segment-specific patterns
             if segment == 'highly_seasonal':
-                seasonality = 1.0 + 0.5 * np.sin(2 * np.pi * date.month / 12.0)
+                seasonality = 1.0 + 0.7 * np.sin(2 * np.pi * date.month / 12.0)  # Increased seasonality
             elif segment == 'semi_seasonal':
-                seasonality = 1.0 + 0.3 * np.sin(2 * np.pi * date.month / 12.0)
+                seasonality = 1.0 + 0.4 * np.sin(2 * np.pi * date.month / 12.0)  # Increased seasonality
             elif segment == 'new_sku':
                 # New SKUs have increasing trend
                 days_since_start = (date - pd.to_datetime(start_date)).days
-                trend = 1.0 + 0.001 * days_since_start
+                trend = 1.0 + 0.002 * days_since_start  # Increased trend
                 seasonality = 1.0
             else:  # year_round
                 seasonality = 1.0
             
             # Random noise
-            noise = np.random.normal(1.0, 0.1)
+            noise = np.random.normal(1.0, 0.15)  # Increased noise
             
             # Calculate volume
             volume = base_demand * month_effect * weekday_effect * seasonality * noise

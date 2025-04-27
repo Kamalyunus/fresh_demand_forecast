@@ -112,6 +112,7 @@ class TFTForecaster:
             add_relative_time_idx=True,
             add_target_scales=True,
             add_encoder_length=True,
+            allow_missing_timesteps=self.config.get("allow_missing_timesteps", True),
         )
         
         # Create validation dataset
@@ -207,6 +208,7 @@ class TFTForecaster:
             dropout_range=(0.1, 0.3),
             trainer_kwargs=dict(limit_train_batches=30, devices=1),
             reduce_on_plateau_patience=4,
+            verbose=2,
             use_learning_rate_finder=False,
         )
         
