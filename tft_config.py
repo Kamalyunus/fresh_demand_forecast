@@ -40,30 +40,29 @@ SEGMENT_CONFIGS = {
         "attention_head_size": 4,
         "dropout": 0.2,
         "max_encoder_length": 120  # Longer history for stable patterns
+    },
+    "highly_seasonal": {
+        **BASE_CONFIG,
+        "hidden_size": 24,
+        "attention_head_size": 3,
+        "dropout": 0.15,
+        "max_encoder_length": 365  # Full year history for seasonality
+    },
+    "semi_seasonal": {
+        **BASE_CONFIG,
+        "hidden_size": 20,
+        "attention_head_size": 2,
+        "dropout": 0.15,
+        "max_encoder_length": 180  # 6 months history
+    },
+    "new_sku": {
+        **BASE_CONFIG,
+        "hidden_size": 16,
+        "attention_head_size": 2,
+        "dropout": 0.1,
+        "max_encoder_length": 60,  # Limited history
+        "max_epochs": 2  # Fewer epochs for faster training
     }
-    # ,
-    # "highly_seasonal": {
-    #     **BASE_CONFIG,
-    #     "hidden_size": 24,
-    #     "attention_head_size": 3,
-    #     "dropout": 0.15,
-    #     "max_encoder_length": 365  # Full year history for seasonality
-    # },
-    # "semi_seasonal": {
-    #     **BASE_CONFIG,
-    #     "hidden_size": 20,
-    #     "attention_head_size": 2,
-    #     "dropout": 0.15,
-    #     "max_encoder_length": 180  # 6 months history
-    # },
-    # "new_sku": {
-    #     **BASE_CONFIG,
-    #     "hidden_size": 16,
-    #     "attention_head_size": 2,
-    #     "dropout": 0.1,
-    #     "max_encoder_length": 60,  # Limited history
-    #     "max_epochs": 2  # Fewer epochs for faster training
-    # }
 }
 
 # Training configuration

@@ -213,7 +213,7 @@ def train_models(data, config_path):
         
     return models
 
-def make_predictions(model, model_info, output_dir, segment_name):
+def make_predictions(model_info, output_dir, segment_name):
     """Make predictions using the trained model."""
     try:
         # Get validation dataloader from the forecaster
@@ -224,142 +224,53 @@ def make_predictions(model, model_info, output_dir, segment_name):
         )
 
         # Make predictions
-        pred_output = model_info['forecaster'].predict(
+        raw_predictions = model_info['forecaster'].predict(
             val_dataloader,
-            mode="prediction",
-            return_y=True,
+            mode="raw",
             return_x=True
         )
-
-        # Extract predictions and actual values from the output
-        predictions_tensor = pred_output[0]  # First element of tuple is predictions
-        actual_values = pred_output[1]  # Second element is actual values (x)
-
-        # Move tensors to CPU and convert to numpy
-        predictions_np = predictions_tensor.cpu().numpy()
-        
-        # Create DataFrame with predictions
-        n_samples, n_timepoints = predictions_np.shape
-        predictions = pd.DataFrame({
-            'sample_id': np.repeat(range(n_samples), n_timepoints),
-            'time_point': np.tile(range(n_timepoints), n_samples),
-            'prediction': predictions_np.flatten()
-        })
-
-        if actual_values is not None:
-            actual_np = actual_values[0].cpu().numpy()  # First element of tuple contains values
-            predictions['actual'] = actual_np.flatten()
-        
-        # Store predictions by SKU
-        predictions_by_sku = {}
-        group_ids = model_info['forecaster'].validation_dataset.group_ids
-        for i, sku in enumerate(group_ids):
-            sku_mask = predictions['sample_id'] == i
-            predictions_by_sku[sku] = predictions[sku_mask]
         
         # Save feature importance if available
-        if hasattr(model, 'feature_importance'):
-            importance = model.feature_importance()
+        if hasattr(model_info['forecaster'], 'feature_importance'):
+            importance = model_info['forecaster'].feature_importance()
             importance.to_csv(os.path.join(output_dir, f'{segment_name}_feature_importance.csv'))
+
+        # plot 10 examples
+        for idx in range(10):  
+            fig = model_info['forecaster'].plot_id(raw_predictions, idx=idx)
+            fig.savefig(os.path.join(output_dir, f'{segment_name}_prediction_example_{idx}.png'))
         
-        # Plot predictions for a few examples
-        for i in range(min(3, len(group_ids))):
-            plt.figure(figsize=(12, 6))
-            sku = group_ids[i]
-            sku_data = predictions_by_sku[sku]
-            
-            plt.plot(sku_data['time_point'], sku_data['prediction'], 
-                    label='Predicted', linestyle='-')
-            if 'actual' in sku_data.columns:
-                plt.plot(sku_data['time_point'], sku_data['actual'], 
-                        label='Actual', linestyle='--')
-            
-            plt.title(f'Predictions vs Actual - {sku} ({segment_name})')
-            plt.xlabel('Time Point')
-            plt.ylabel('Value')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            
-            plt.savefig(os.path.join(output_dir, f'{segment_name}_prediction_example_{i}.png'))
-            plt.close()
-        
-        return predictions_by_sku
+        return None
         
     except Exception as e:
         logger.error(f"Error making predictions for {segment_name} segment: {str(e)}")
         return None
 
-def evaluate_models(models, predictions):
+def evaluate_models(model_info, segment):
     """Evaluate model performance"""
     logger.info("Evaluating models...")
     results = {}
-    
-    for segment, model_info in models.items():
-        if segment not in predictions:
-            continue
-            
-        # Evaluate predictions
-        metrics = model_info['forecaster'].evaluate(predictions[segment])
-        results[segment] = metrics
+    # Get validation dataloader from the forecaster
+    val_dataloader = model_info['forecaster'].validation_dataset.to_dataloader(
+        train=False,
+        batch_size=128,
+        num_workers=0
+    )
+
+    # Make predictions
+    predictions = model_info['forecaster'].predict(
+        val_dataloader,
+        mode="prediction",
+        return_y=True
+    )
+
+    # Evaluate predictions
+    metrics = model_info['forecaster'].evaluate(predictions)
+    results[segment] = metrics
         
-        logger.info(f"{segment} segment metrics: {metrics}")
+    logger.info(f"{segment} segment metrics: {metrics}")
         
     return results
-
-def create_visualizations(data, predictions, output_dir):
-    """Create visualizations for representative SKUs from each segment"""
-    logger.info("Creating visualizations...")
-    
-    # Create output directory for visualizations
-    viz_dir = os.path.join(output_dir, "visualizations")
-    os.makedirs(viz_dir, exist_ok=True)
-    
-    # Get representative SKUs from each segment
-    segments = data['segment'].unique()
-    for segment in segments:
-        segment_data = data[data['segment'] == segment]
-        skus = segment_data['sku'].unique()
-        
-        # Select up to 3 SKUs from each segment
-        sample_skus = np.random.choice(skus, min(3, len(skus)), replace=False)
-        
-        for sku in sample_skus:
-            sku_data = segment_data[segment_data['sku'] == sku]
-            
-            # Create time series plot
-            plt.figure(figsize=(15, 6))
-            plt.plot(sku_data['date'], sku_data['volume'], label='Actual')
-            
-            # Add predictions if available
-            if sku in predictions:
-                pred_data = predictions[sku]
-                plt.plot(pred_data['date'], pred_data['prediction'], 
-                        label='Predicted', linestyle='--')
-            
-            plt.title(f'Volume over Time - {sku} ({segment})')
-            plt.xlabel('Date')
-            plt.ylabel('Volume')
-            plt.legend()
-            plt.grid(True)
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            
-            # Save plot
-            plt.savefig(os.path.join(viz_dir, f'{sku}_volume.png'))
-            plt.close()
-            
-            # Create feature importance plot if available
-            if f'{segment}_feature_importance' in predictions:
-                feature_importance = predictions[f'{segment}_feature_importance']
-                plt.figure(figsize=(10, 6))
-                sns.barplot(x='importance', y='feature', data=feature_importance)
-                plt.title(f'Feature Importance - {sku} ({segment})')
-                plt.tight_layout()
-                plt.savefig(os.path.join(viz_dir, f'{sku}_feature_importance.png'))
-                plt.close()
-    
-    logger.info(f"Visualizations saved to {viz_dir}")
 
 def main(config=None):
     """Main function to orchestrate the entire workflow"""
@@ -383,22 +294,15 @@ def main(config=None):
     
     # Train models
     models = train_models(data, config["data"]["output_dir"])
+
+    # Evaluate models
+    results = {}
+    for segment, model_info in models.items():
+        results[segment] = evaluate_models(model_info, segment)  
     
     # Make predictions
-    predictions = {}
     for segment, model_info in models.items():
-        predictions[segment] = make_predictions(model_info['model'], model_info, config["data"]["output_dir"], segment)
-    
-    # Evaluate models
-    results = evaluate_models(models, predictions)
-    
-    # Create visualizations
-    create_visualizations(data, predictions, config["data"]["output_dir"])
-    
-    # Save results
-    pd.DataFrame(results).to_csv(
-        os.path.join(config["data"]["output_dir"], "model_results.csv")
-    )
+         make_predictions(model_info, config["data"]["output_dir"], segment)
     
     logger.info("Forecasting pipeline completed successfully!")
 

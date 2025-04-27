@@ -216,7 +216,7 @@ class TFTForecaster:
             
         return study.best_trial.params
     
-    def predict(self, dataloader, mode="prediction", return_y=True, return_x=False):
+    def predict(self, dataloader, mode="prediction", return_y=False, return_x=False):
         """Make predictions using the best model"""
         if self.best_model is None:
             raise ValueError("No trained model available. Please train the model first.")
@@ -235,3 +235,9 @@ class TFTForecaster:
         mae = MAE()(predictions.output, predictions.y)
         smape = SMAPE()(predictions.output, predictions.y)
         return {"MAE": mae, "SMAPE": smape}
+    
+    def plot_id(self, predictions, idx):
+        """Plot predictions for a given index"""
+        fig = self.best_model.plot_prediction(predictions.x, predictions.output, idx=idx, add_loss_to_title=True)
+        return fig
+
